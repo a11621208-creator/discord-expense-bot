@@ -11,57 +11,78 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GAS_URL = os.getenv('GAS_URL')
 
-# 分類對應表 - 根據用戶提供的項目清單
+# 完整的分類對應表 - 根據你的 Sheet 結構
 CLASSIFICATION_MAPPING = {
-    # 收入項目 (A15~A19)
-    '核心教材收入': '教材收入',
-    '教材': '教材收入',
-    '課程': '教材收入',
-    '線上課程': '教材收入',
+    # 收入類別 (A7~A13)
+    '核心教材': 'A7',  # 核心教材收入
+    '教材': 'A7',
+    '課程': 'A7',
+    '線上課程': 'A7',
     
-    # 成本項目 (A23~A28)
-    '銷貨成本': '成本',
-    '成本': '成本',
-    '進貨': '成本',
-    '原料': '成本',
-    '材料': '成本',
+    '訂閱': 'A8',  # 訂閱教材收入
+    '訂閱教材': 'A8',
     
-    # 支出項目 (A7~A13)
-    '咖啡': '食物',
-    '食物': '食物',
-    '餐飲': '食物',
-    '午餐': '食物',
-    '晚餐': '食物',
-    '飲料': '食物',
-    '便當': '食物',
+    '入門': 'A9',  # 入門方案收入
+    '入門方案': 'A9',
     
-    '交通': '交通',
-    '車費': '交通',
-    '油錢': '交通',
-    '停車': '交通',
-    '計程車': '交通',
+    '教練': 'A10',  # 教練1v1 收入
+    '1v1': 'A10',
+    '一對一': 'A10',
     
-    '辦公用品': '辦公用品',
-    '文具': '辦公用品',
-    '紙張': '辦公用品',
-    '筆': '辦公用品',
+    'staking': 'A11',  # Staking結算收益
+    '結算收益': 'A11',
     
-    '電話費': '通訊費',
-    '網路費': '通訊費',
-    '通訊': '通訊費',
-    '手機': '通訊費',
+    '軟體': 'A12',  # 軟體代理收入
+    '代理': 'A12',
     
-    '房租': '租金',
-    '租金': '租金',
-    '辦公室': '租金',
+    '其他營業': 'A13',  # 其他營業收入
     
-    '水電': '水電費',
-    '電費': '水電費',
-    '瓦斯': '水電費',
-    '水費': '水電費',
+    # 成本類別 (A15~A19)
+    '銷貨成本': 'A15',
+    '進貨': 'A15',
+    '原料': 'A15',
+    '材料': 'A15',
     
-    '保險': '保險費',
-    '保險費': '保險費',
+    '活動成本': 'A16',
+    '活動': 'A16',
+    '會議': 'A16',
+    
+    '虧損': 'A17',  # Staking結算虧損
+    
+    '營業成本': 'A18',  # 其他營業成本
+    
+    '人事成本': 'A19',
+    '薪資': 'A19',
+    '工資': 'A19',
+    
+    # 支出類別 (A23~A28)
+    '人事費用': 'A23',
+    '獎金': 'A23',
+    '薪水': 'A23',
+    '工資': 'A23',
+    
+    '租賃費用': 'A24',
+    '租金': 'A24',
+    '辦公室': 'A24',
+    '雲端': 'A24',
+    'line': 'A24',
+    
+    '勞務費': 'A25',
+    '外包': 'A25',
+    '工程師': 'A25',
+    '承包': 'A25',
+    
+    '行銷費用': 'A26',
+    '廣告': 'A26',
+    '公關': 'A26',
+    '宣傳': 'A26',
+    
+    '分潤': 'A27',
+    '分潤獎金': 'A27',
+    
+    '雜項': 'A28',
+    '其他': 'A28',
+    '雜項費用': 'A28',
 }
 
 def classify_item(item_name):
@@ -72,13 +93,19 @@ def classify_item(item_name):
     if item_name in CLASSIFICATION_MAPPING:
         return CLASSIFICATION_MAPPING[item_name]
     
-    # 關鍵字匹配
+    # 關鍵字匹配（優先匹配較長的關鍵字）
+    matches = []
     for keyword, category in CLASSIFICATION_MAPPING.items():
-        if keyword.lower() in item_lower or item_lower in keyword.lower():
-            return category
+        if keyword.lower() in item_lower:
+            matches.append((len(keyword), category))
     
-    # 預設分類
-    return '其他'
+    if matches:
+        # 返回最長匹配的分類（更精確）
+        matches.sort(reverse=True)
+        return matches[0][1]
+    
+    # 預設分類為雜項費用
+    return 'A28'
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -92,16 +119,29 @@ async def on_ready():
 async def record_expense(ctx, amount: float, *, description: str):
     """記錄支出或收入
     用法: !記帳 100 咖啡
+         !記帳 -500 核心教材收入
     """
     try:
         # 自動分類
         category = classify_item(description)
         
+        # 判斷是收入還是支出
+        # 收入類別 (A7~A13) 和成本類別 (A15~A19) 用負數表示
+        if category in ['A7', 'A8', 'A9', 'A10', 'A11', 'A12', 'A13']:
+            item_type = 'income'
+            actual_amount = abs(amount)
+        elif category in ['A15', 'A16', 'A17', 'A18', 'A19']:
+            item_type = 'cost'
+            actual_amount = abs(amount)
+        else:
+            item_type = 'expense'
+            actual_amount = abs(amount)
+        
         # 準備數據
         data = {
             'action': 'record',
-            'type': 'expense' if amount > 0 else 'income',
-            'amount': abs(amount),
+            'type': item_type,
+            'amount': actual_amount,
             'description': description,
             'category': category,
             'date': datetime.now().isoformat()
@@ -113,7 +153,7 @@ async def record_expense(ctx, amount: float, *, description: str):
         if response.status_code == 200:
             result = response.json()
             if result.get('success'):
-                await ctx.send(f'✅ 已記錄：{description} - ${amount}\n分類：{category}')
+                await ctx.send(f'✅ 已記錄：{description} - ${actual_amount}\n分類：{category}')
             else:
                 await ctx.send(f'❌ 記錄失敗：{result.get("error", "未知錯誤")}')
         else:
