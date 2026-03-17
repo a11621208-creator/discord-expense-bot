@@ -42,4 +42,52 @@ def get_gspread_client():
     # 從 Zeabur 環境變數讀取 JSON 字串
     creds_json = os.getenv('GOOGLE_CREDS')
     if not creds_json:
-        raise ValueError("環境變
+        raise ValueError("環境變數 GOOGLE_CREDS 未設定")
+    
+    info = json.loads(creds_json)
+    scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    creds = Credentials.from_service_account_info(info, scopes=scope)
+    return gspread.authorize(creds)
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+
+@bot.command(name="記帳")
+async def record(ctx, amount: int, *, description: str):
+    try:
+        client = get_gspread_client()
+        sheet = client.open(SHEET_NAME).get_worksheet(0)
+        
+        now = datetime.datetime.now()
+        month = now.month
+        
+        # 匹配類別
+        target_category = "雜項費用"
+        for kw, cat in KEYWORD_RULES.items():
+            if kw.lower() in description.lower():
+                target_category = cat
+                break
+        
+        row = CATEGORY_MAP[target_category]
+        col = get_month_col(month)
+        
+        # 讀取並更新金額
+        current_cell = sheet.cell(row, col)
+        current_val = int(current_cell.value) if current_cell.value else 0
+        new_val = current_val + amount
+        sheet.update_cell(row, col, new_val)
+        
+        # 更新備註 (填在金額右邊那一欄，即 Col + 1)
+        detail_col = col + 1
+        current_detail = sheet.cell(row, detail_col).value or ""
+        timestamp = now.strftime("%m/%d %H:%M")
+        new_detail = f"{current_detail}\n{timestamp}: {description} (${amount})" if current_detail else f"{timestamp}: {description} (${amount})"
+        sheet.update_cell(row, detail_col, new_detail)
+
+        await ctx.send(f"✅ **記帳成功！**\n📅 月份：{month}月\n📁 類別：{target_category}\n💰 金額：${amount}\n📝 內容：{description}")
+
+    except Exception as e:
+        await ctx.send(f"❌ 發生錯誤: {str(e)}")
+
+bot.run(os.getenv('DISCORD_TOKEN'))
