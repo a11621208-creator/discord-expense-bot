@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 import requests
 from datetime import datetime
+from aiohttp import web
+import asyncio
 
 load_dotenv()
 
@@ -102,4 +104,24 @@ async def send_monthly_report():
         except Exception as e:
             print(f"Error sending monthly report: {e}")
 
-bot.run(DISCORD_TOKEN)
+# HTTP 服務器（保持容器運行）
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    print("HTTP server started on port 8080")
+
+async def main():
+    # 啟動 HTTP 服務器
+    await start_http_server()
+    # 啟動 Discord Bot
+    await bot.start(DISCORD_TOKEN)
+
+if __name__ == '__main__':
+    asyncio.run(main())
