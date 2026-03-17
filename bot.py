@@ -4,7 +4,6 @@ import os
 from dotenv import load_dotenv
 import requests
 from datetime import datetime
-import json
 
 load_dotenv()
 
@@ -16,7 +15,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 分類規則
 CATEGORIES = {
     '食物': ['吃飯', '早餐', '午餐', '晚餐', '咖啡', '飲料', '零食'],
     '交通': ['公車', '捷運', '計程車', '油錢', '停車', '加油'],
@@ -26,7 +24,6 @@ CATEGORIES = {
 }
 
 def categorize_expense(description):
-    """根據描述自動分類"""
     description_lower = description.lower()
     for category, keywords in CATEGORIES.items():
         for keyword in keywords:
@@ -35,7 +32,6 @@ def categorize_expense(description):
     return '其他'
 
 def send_to_gas(amount, description, category):
-    """發送到 Google Apps Script"""
     try:
         data = {
             'action': 'addExpense',
@@ -57,12 +53,7 @@ async def on_ready():
 
 @bot.command(name='記帳')
 async def add_expense(ctx, amount: float, *, description: str):
-    """記錄支出
-    用法: !記帳 100 買咖啡
-    """
     category = categorize_expense(description)
-    
-    # 發送到 Google Sheet
     success = send_to_gas(amount, description, category)
     
     if success:
@@ -73,11 +64,10 @@ async def add_expense(ctx, amount: float, *, description: str):
         )
         await ctx.send(embed=embed)
     else:
-        await ctx.send(f"❌ 記帳失敗，請稍後重試")
+        await ctx.send("❌ 記帳失敗，請稍後重試")
 
 @bot.command(name='報告')
 async def get_report(ctx):
-    """手動獲取本月報告"""
     try:
         data = {'action': 'getMonthlyReport'}
         response = requests.post(GAS_URL, json=data)
@@ -94,8 +84,7 @@ async def get_report(ctx):
 
 @tasks.loop(hours=24)
 async def send_monthly_report():
-    """每月 1 號自動發送報告"""
-    if datetime.now().day == 1:
+    if datetime.now().day == 1 and datetime.now().hour == 0:
         try:
             data = {'action': 'getMonthlyReport'}
             response = requests.post(GAS_URL, json=data)
@@ -112,9 +101,5 @@ async def send_monthly_report():
             requests.post(DISCORD_WEBHOOK, json=webhook_data)
         except Exception as e:
             print(f"Error sending monthly report: {e}")
-
-@send_monthly_report.before_loop
-async def before_send_report():
-    await bot.wait_until_ready()
 
 bot.run(DISCORD_TOKEN)
