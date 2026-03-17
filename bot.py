@@ -1,163 +1,149 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import requests
+import json
 from datetime import datetime
-from aiohttp import web
-import asyncio
-import logging
-
-# 設置日誌
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GAS_URL = os.getenv('GAS_URL')
-DISCORD_WEBHOOK = os.getenv('DISCORD_WEBHOOK')
+
+# 分類對應表 - 根據用戶提供的項目清單
+CLASSIFICATION_MAPPING = {
+    # 收入項目 (A15~A19)
+    '核心教材收入': '教材收入',
+    '教材': '教材收入',
+    '課程': '教材收入',
+    '線上課程': '教材收入',
+    
+    # 成本項目 (A23~A28)
+    '銷貨成本': '成本',
+    '成本': '成本',
+    '進貨': '成本',
+    '原料': '成本',
+    '材料': '成本',
+    
+    # 支出項目 (A7~A13)
+    '咖啡': '食物',
+    '食物': '食物',
+    '餐飲': '食物',
+    '午餐': '食物',
+    '晚餐': '食物',
+    '飲料': '食物',
+    '便當': '食物',
+    
+    '交通': '交通',
+    '車費': '交通',
+    '油錢': '交通',
+    '停車': '交通',
+    '計程車': '交通',
+    
+    '辦公用品': '辦公用品',
+    '文具': '辦公用品',
+    '紙張': '辦公用品',
+    '筆': '辦公用品',
+    
+    '電話費': '通訊費',
+    '網路費': '通訊費',
+    '通訊': '通訊費',
+    '手機': '通訊費',
+    
+    '房租': '租金',
+    '租金': '租金',
+    '辦公室': '租金',
+    
+    '水電': '水電費',
+    '電費': '水電費',
+    '瓦斯': '水電費',
+    '水費': '水電費',
+    
+    '保險': '保險費',
+    '保險費': '保險費',
+}
+
+def classify_item(item_name):
+    """根據項目名稱自動分類"""
+    item_lower = item_name.lower()
+    
+    # 精確匹配
+    if item_name in CLASSIFICATION_MAPPING:
+        return CLASSIFICATION_MAPPING[item_name]
+    
+    # 關鍵字匹配
+    for keyword, category in CLASSIFICATION_MAPPING.items():
+        if keyword.lower() in item_lower or item_lower in keyword.lower():
+            return category
+    
+    # 預設分類
+    return '其他'
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-CATEGORIES = {
-    '食物': ['吃飯', '早餐', '午餐', '晚餐', '咖啡', '飲料', '零食'],
-    '交通': ['公車', '捷運', '計程車', '油錢', '停車', '加油'],
-    '娛樂': ['電影', '遊戲', '演唱會', '旅遊', '運動'],
-    '購物': ['衣服', '鞋子', '書', '電子產品'],
-    '其他': []
-}
-
-def categorize_expense(description):
-    description_lower = description.lower()
-    for category, keywords in CATEGORIES.items():
-        for keyword in keywords:
-            if keyword in description_lower:
-                return category
-    return '其他'
-
-def send_to_gas(amount, description, category):
-    try:
-        logger.info(f"📤 正在發送到 Google Apps Script: 金額={amount}, 描述={description}, 分類={category}")
-        data = {
-            'action': 'addExpense',
-            'amount': amount,
-            'description': description,
-            'category': category,
-            'date': datetime.now().strftime('%Y-%m-%d')
-        }
-        response = requests.post(GAS_URL, json=data, timeout=10)
-        logger.info(f"📥 Google Apps Script 回應: 狀態碼={response.status_code}")
-        return response.status_code == 200
-    except Exception as e:
-        logger.error(f"❌ 發送到 Google Apps Script 失敗: {e}")
-        return False
-
 @bot.event
 async def on_ready():
-    logger.info(f"✅ Bot 已連接到 Discord: {bot.user}")
-    print(f'{bot.user} has connected to Discord!')
-    send_monthly_report.start()
-
-@bot.event
-async def on_message(message):
-    logger.info(f"📨 收到消息 - 用戶: {message.author}, 內容: {message.content}, 頻道: {message.channel}")
-    await bot.process_commands(message)
+    print(f'{bot.user} 已連接到 Discord')
 
 @bot.command(name='記帳')
-async def add_expense(ctx, amount: float, *, description: str):
-    logger.info(f"🔔 收到記帳命令 - 用戶: {ctx.author}, 金額: {amount}, 描述: {description}")
-    
+async def record_expense(ctx, amount: float, *, description: str):
+    """記錄支出或收入
+    用法: !記帳 100 咖啡
+    """
     try:
-        category = categorize_expense(description)
-        logger.info(f"📂 自動分類: {category}")
+        # 自動分類
+        category = classify_item(description)
         
-        success = send_to_gas(amount, description, category)
+        # 準備數據
+        data = {
+            'action': 'record',
+            'type': 'expense' if amount > 0 else 'income',
+            'amount': abs(amount),
+            'description': description,
+            'category': category,
+            'date': datetime.now().isoformat()
+        }
         
-        if success:
-            logger.info(f"✅ 記帳成功")
-            embed = discord.Embed(
-                title="✅ 記帳成功",
-                description=f"**金額**: ${amount}\n**描述**: {description}\n**分類**: {category}",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
+        # 發送到 GAS
+        response = requests.post(GAS_URL, json=data, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                await ctx.send(f'✅ 已記錄：{description} - ${amount}\n分類：{category}')
+            else:
+                await ctx.send(f'❌ 記錄失敗：{result.get("error", "未知錯誤")}')
         else:
-            logger.error(f"❌ 記帳失敗 - Google Apps Script 返回錯誤")
-            await ctx.send("❌ 記帳失敗，Google Apps Script 返回錯誤，請稍後重試")
+            await ctx.send(f'❌ 無法連接到 Google Sheet：{response.status_code}')
+    
     except Exception as e:
-        logger.error(f"❌ 記帳命令出錯: {e}")
-        await ctx.send(f"❌ 記帳失敗: {str(e)}")
+        await ctx.send(f'❌ 發生錯誤：{str(e)}')
 
 @bot.command(name='報告')
 async def get_report(ctx):
-    logger.info(f"🔔 收到報告命令 - 用戶: {ctx.author}")
-    
+    """獲取本月財務報告"""
     try:
-        data = {'action': 'getMonthlyReport'}
+        data = {
+            'action': 'report',
+            'date': datetime.now().isoformat()
+        }
+        
         response = requests.post(GAS_URL, json=data, timeout=10)
-        logger.info(f"📥 Google Apps Script 回應: 狀態碼={response.status_code}")
         
-        report = response.json()
-        
-        embed = discord.Embed(
-            title="📊 本月財務報告",
-            description=report.get('summary', '無數據'),
-            color=discord.Color.blue()
-        )
-        await ctx.send(embed=embed)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                report = result.get('report', '無數據')
+                await ctx.send(f'📊 本月報告：\n{report}')
+            else:
+                await ctx.send(f'❌ 無法獲取報告：{result.get("error", "未知錯誤")}')
+        else:
+            await ctx.send(f'❌ 無法連接到 Google Sheet')
+    
     except Exception as e:
-        logger.error(f"❌ 獲取報告失敗: {e}")
-        await ctx.send(f"❌ 獲取報告失敗: {str(e)}")
+        await ctx.send(f'❌ 發生錯誤：{str(e)}')
 
-@bot.command(name='測試')
-async def test_command(ctx):
-    logger.info(f"🔔 收到測試命令 - 用戶: {ctx.author}")
-    await ctx.send("✅ Bot 正常運行！")
-
-@tasks.loop(hours=24)
-async def send_monthly_report():
-    if datetime.now().day == 1 and datetime.now().hour == 0:
-        try:
-            logger.info("📊 開始發送月度報告")
-            data = {'action': 'getMonthlyReport'}
-            response = requests.post(GAS_URL, json=data)
-            report = response.json()
-            
-            webhook_data = {
-                'content': '📊 **本月財務報告**',
-                'embeds': [{
-                    'title': '月度總結',
-                    'description': report.get('summary', '無數據'),
-                    'color': 3447003
-                }]
-            }
-            requests.post(DISCORD_WEBHOOK, json=webhook_data)
-            logger.info("✅ 月度報告已發送")
-        except Exception as e:
-            logger.error(f"❌ 發送月度報告失敗: {e}")
-
-# HTTP 服務器（保持容器運行）
-async def health_check(request):
-    return web.Response(text="Bot is running", status=200)
-
-async def start_http_server():
-    app = web.Application()
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
-    await site.start()
-    logger.info("HTTP server started on port 8080")
-    print("HTTP server started on port 8080")
-
-async def main():
-    # 啟動 HTTP 服務器
-    await start_http_server()
-    # 啟動 Discord Bot
-    await bot.start(DISCORD_TOKEN)
-
-if __name__ == '__main__':
-    asyncio.run(main())
+bot.run(DISCORD_TOKEN)
