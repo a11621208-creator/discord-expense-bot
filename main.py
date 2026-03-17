@@ -1,3 +1,56 @@
+import os
+import json
+import datetime
+import gspread
+from google.oauth2.service_account import Credentials
+import discord
+from discord.ext import commands
+
+# --- 設定區 ---
+SHEET_NAME = "2026損益表"
+
+# 類別與列號對應 (根據 A 欄位置)
+CATEGORY_MAP = {
+    "核心教材收入": 7, "訂閱教材收入": 8, "入門方案收入": 9, "教練1v1 收入": 10,
+    "Staking結算收益": 11, "軟體代理收入": 12, "其他營業收入": 13,
+    "銷貨成本": 15, "活動成本": 16, "Staking結算虧損": 17, "其他營業成本": 18, "人事成本": 19,
+    "人事費用(含獎金)": 23, "租賃費用(含官方Line/雲端…)": 24, "勞務費(Ex:外包工程師)": 25,
+    "行銷費用(廣告/公關)": 26, "分潤獎金": 27, "雜項費用": 28
+}
+
+# 智慧匹配關鍵字
+KEYWORD_RULES = {
+    "教材": "核心教材收入", "訂閱": "訂閱教材收入", "入門": "入門方案收入", "教練": "教練1v1 收入",
+    "staking": "Staking結算收益", "代理": "軟體代理收入",
+    "成本": "銷貨成本", "活動": "活動成本", "虧損": "Staking結算虧損", "人事": "人事成本",
+    "薪資": "人事費用(含獎金)", "獎金": "人事費用(含獎金)", "薪水": "人事費用(含獎金)",
+    "line": "租賃費用(含官方Line/雲端…)", "雲端": "租賃費用(含官方Line/雲端…)", "google": "租賃費用(含官方Line/雲端…)",
+    "外包": "勞務費(Ex:外包工程師)", "工程師": "勞務費(Ex:外包工程師)",
+    "廣告": "行銷費用(廣告/公關)", "行銷": "行銷費用(廣告/公關)", "公關": "行銷費用(廣告/公關)",
+    "分潤": "分潤獎金"
+}
+
+def get_month_col(month):
+    return 4 + (month - 1) * 3  # 1月=D(4), 2月=G(7), 3月=J(10)
+
+# --- 初始化 ---
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+def get_gspread_client():
+    creds_json = os.getenv('GOOGLE_CREDS')
+    if not creds_json:
+        raise ValueError("環境變數 GOOGLE_CREDS 未設定")
+    info = json.loads(creds_json)
+    scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    creds = Credentials.from_service_account_info(info, scopes=scope)
+    return gspread.authorize(creds)
+
+@bot.event
+async def on_ready():
+    print(f'✅ 記帳機器人已就緒: {bot.user}')
+
 @bot.command(name="記帳")
 async def record(ctx, amount: int, *, description: str):
     try:
@@ -17,22 +70,30 @@ async def record(ctx, amount: int, *, description: str):
         row = CATEGORY_MAP[target_category]
         col = get_month_col(month)
         
-        # 2. 處理金額累加
+        # 2. 讀取現有金額 (處理帶有逗號或空格的格式)
         current_cell = sheet.cell(row, col)
-        current_val = int(current_cell.value) if current_cell.value else 0
+        raw_value = current_cell.value
+        
+        if raw_value:
+            # 移除逗號與前後空格，確保 int() 能讀取
+            clean_value = str(raw_value).replace(',', '').strip()
+            # 如果還是有非數字字元，強制當作 0
+            current_val = int(float(clean_value)) if clean_value.replace('.','',1).isdigit() else 0
+        else:
+            current_val = 0
+            
         new_val = current_val + amount
         sheet.update_cell(row, col, new_val)
         
-        # 3. 處理「原生附註」(Cell Note)
-        # 取得舊的附註內容
-        existing_note = sheet.cell(row, col).note or ""
+        # 3. 加入「小三角」附註 (Note)
+        existing_note = current_cell.note or ""
         timestamp = now.strftime("%m/%d %H:%M")
         new_note_content = f"{existing_note}\n{timestamp}: {description} (${amount})".strip()
-        
-        # 更新附註 (這就是你要的：滑鼠放上去才會顯示)
         sheet.update_note(row, col, new_note_content)
 
-        await ctx.send(f"✅ **記帳成功！**\n📁 類別：{target_category}\n💰 金額：${amount}\n📝 附註已加入儲存格")
+        await ctx.send(f"✅ **入帳成功！**\n📁 類別：`{target_category}`\n💰 金額：`${amount:,}`\n📅 月份：{month}月\n📝 附註：滑鼠移至試算表格子即可查看明細")
 
     except Exception as e:
-        await ctx.send(f"❌ 發生錯誤: {str(e)}")
+        await ctx.send(f"❌ 記帳失敗，錯誤原因：`{str(e)}`")
+
+bot.run(os.getenv('DISCORD_TOKEN'))
