@@ -108,6 +108,37 @@ def classify_item(item_name):
     # 預設分類為雜項費用
     return '雜項費用'
 
+def parse_date_string(date_str):
+    """
+    解析日期字符串
+    支持格式：
+    - "2/15" -> 2026-02-15 (當前年份)
+    - "2026-02-15" -> 2026-02-15
+    返回 ISO 格式的日期字符串
+    """
+    try:
+        if '/' in date_str:
+            # 格式: M/D
+            parts = date_str.split('/')
+            month = int(parts[0])
+            day = int(parts[1])
+            year = datetime.now().year
+            
+            # 驗證月份和日期
+            if month < 1 or month > 12:
+                return None
+            if day < 1 or day > 31:
+                return None
+            
+            date_obj = datetime(year, month, day)
+            return date_obj.isoformat()
+        else:
+            # 嘗試解析 ISO 格式或其他標準格式
+            date_obj = datetime.fromisoformat(date_str)
+            return date_obj.isoformat()
+    except:
+        return None
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -117,17 +148,36 @@ async def on_ready():
     print(f'{bot.user} 已連接到 Discord')
 
 @bot.command(name='記帳')
-async def record_expense(ctx, amount: float, *, description: str):
+async def record_expense(ctx, amount: float, *, args: str):
     """記錄支出或收入
     用法: !記帳 100 咖啡
          !記帳 500 核心教材
+         !記帳 100 咖啡 2/15  (指定日期：2月15日)
     """
     try:
+        # 解析參數：可能包含日期
+        parts = args.rsplit(' ', 1)  # 從右邊分割，最多分割1次
+        
+        description = parts[0]
+        date_str = None
+        
+        # 檢查是否有日期參數
+        if len(parts) > 1:
+            potential_date = parts[1]
+            # 檢查是否看起來像日期 (包含 / 或 -)
+            if '/' in potential_date or '-' in potential_date:
+                parsed_date = parse_date_string(potential_date)
+                if parsed_date:
+                    date_str = parsed_date
+                    description = parts[0]
+                else:
+                    # 日期格式無效，將整個 args 視為描述
+                    description = args
+        
         # 自動分類
         category = classify_item(description)
         
         # 判斷是收入還是支出
-        # 收入類別 (A7~A13) 和成本類別 (A15~A19) 用負數表示
         if category in ['核心教材收入', '訂閱教材收入', '入門方案收入', '教練1v1 收入', 'Staking結算收益', '軟體代理收入', '其他營業收入']:
             item_type = 'income'
             actual_amount = abs(amount)
@@ -145,6 +195,43 @@ async def record_expense(ctx, amount: float, *, description: str):
             'amount': actual_amount,
             'description': description,
             'category': category,
+            'date': date_str or datetime.now().isoformat()
+        }
+        
+        # 發送到 GAS
+        response = requests.post(GAS_URL, json=data, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                date_info = ''
+                if date_str:
+                    date_obj = datetime.fromisoformat(date_str)
+                    date_info = f' ({date_obj.strftime("%Y-%m-%d")})'
+                await ctx.send(f'✅ 已記錄：{description} - ${actual_amount}{date_info}\n分類：{category}')
+            else:
+                await ctx.send(f'❌ 記錄失敗：{result.get("error", "未知錯誤")}')
+        else:
+            await ctx.send(f'❌ 無法連接到 Google Sheet：{response.status_code}')
+    
+    except Exception as e:
+        await ctx.send(f'❌ 發生錯誤：{str(e)}')
+
+@bot.command(name='修改')
+async def update_expense(ctx, timestamp: str, amount: float, *, description: str):
+    """修改已記錄的支出
+    用法: !修改 [時間戳] 150 咖啡
+    """
+    try:
+        # 自動分類
+        category = classify_item(description)
+        
+        # 準備數據
+        data = {
+            'action': 'update',
+            'recordId': timestamp,
+            'amount': abs(amount),
+            'description': description,
             'date': datetime.now().isoformat()
         }
         
@@ -154,9 +241,9 @@ async def record_expense(ctx, amount: float, *, description: str):
         if response.status_code == 200:
             result = response.json()
             if result.get('success'):
-                await ctx.send(f'✅ 已記錄：{description} - ${actual_amount}\n分類：{category}')
+                await ctx.send(f'✅ 已更新：{description} - ${abs(amount)}\n分類：{category}')
             else:
-                await ctx.send(f'❌ 記錄失敗：{result.get("error", "未知錯誤")}')
+                await ctx.send(f'❌ 更新失敗：{result.get("error", "未知錯誤")}')
         else:
             await ctx.send(f'❌ 無法連接到 Google Sheet：{response.status_code}')
     
@@ -164,12 +251,24 @@ async def record_expense(ctx, amount: float, *, description: str):
         await ctx.send(f'❌ 發生錯誤：{str(e)}')
 
 @bot.command(name='報告')
-async def get_report(ctx):
-    """獲取本月財務報告"""
+async def get_report(ctx, date_str: str = None):
+    """獲取財務報告
+    用法: !報告          (本月)
+         !報告 2/15     (2月份)
+    """
     try:
+        report_date = None
+        if date_str:
+            parsed_date = parse_date_string(date_str)
+            if parsed_date:
+                report_date = parsed_date
+            else:
+                await ctx.send(f'❌ 日期格式無效，請使用 M/D 格式 (例如：2/15)')
+                return
+        
         data = {
             'action': 'getReport',
-            'date': datetime.now().isoformat()
+            'date': report_date or datetime.now().isoformat()
         }
         
         response = requests.post(GAS_URL, json=data, timeout=10)
@@ -179,9 +278,9 @@ async def get_report(ctx):
             if result.get('success'):
                 report = result.get('report', '無數據')
                 # 格式化報告輸出
-                report_text = '📊 本月財務報告：\n'
-                if isinstance(report, dict):
-                    for category, items in report.items():
+                report_text = f'📊 {report.get("yearMonth", "本月")} 財務報告：\n'
+                if isinstance(report, dict) and 'data' in report:
+                    for category, items in report['data'].items():
                         report_text += f'\n**{category}**\n'
                         if isinstance(items, dict):
                             for item_name, value in items.items():
