@@ -69,13 +69,11 @@ async def record(ctx, amount: int, *, description: str):
         row = CATEGORY_MAP[target_category]
         col = get_month_col(month)
         
-        # 2. 獲取儲存格資訊 (包含數值與附註)
-        cell_data = sheet.cell(row, col)
-        raw_value = cell_data.value
+        # 2. 獲取儲存格現有數值
+        raw_value = sheet.cell(row, col).value
         
-        # --- 終極數字過濾邏輯 ---
         if raw_value:
-            # 使用正則表達式只留下數字，排除逗號、空格、貨幣符號等
+            # 使用正則表達式只留下數字
             clean_value = re.sub(r'[^\d]', '', str(raw_value))
             current_val = int(clean_value) if clean_value else 0
         else:
@@ -83,19 +81,22 @@ async def record(ctx, amount: int, *, description: str):
             
         new_val = current_val + amount
         
-        # 3. 更新 Google Sheets
+        # 3. 更新金額
         sheet.update_cell(row, col, new_val)
         
-        # 4. 加入「小三角」附註 (Note)
-        existing_note = cell_data.note or ""
+        # 4. 更新附註 (使用 get_note 確保相容性)
+        try:
+            existing_note = sheet.get_note(f"{gspread.utils.rowcol_to_a1(row, col)}")
+        except:
+            existing_note = ""
+            
         timestamp = now.strftime("%m/%d %H:%M")
         new_note_content = f"{existing_note}\n{timestamp}: {description} (${amount:,})".strip()
-        sheet.update_note(row, col, new_note_content)
+        sheet.update_note(f"{gspread.utils.rowcol_to_a1(row, col)}", new_note_content)
 
         await ctx.send(f"✅ **入帳成功！**\n📁 類別：`{target_category}`\n💰 金額：`${amount:,}`\n📅 月份：{month}月\n📝 明細已加入儲存格附註")
 
     except Exception as e:
-        # 輸出更詳細的錯誤資訊方便 debug
         await ctx.send(f"❌ 記帳失敗！\n錯誤原因：`{str(e)}`")
 
 bot.run(os.getenv('DISCORD_TOKEN'))
