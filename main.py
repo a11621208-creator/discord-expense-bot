@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import re
 import gspread
 from google.oauth2.service_account import Credentials
 import discord
@@ -9,7 +10,6 @@ from discord.ext import commands
 # --- 設定區 ---
 SHEET_NAME = "2026損益表"
 
-# 類別與列號對應 (根據 A 欄位置)
 CATEGORY_MAP = {
     "核心教材收入": 7, "訂閱教材收入": 8, "入門方案收入": 9, "教練1v1 收入": 10,
     "Staking結算收益": 11, "軟體代理收入": 12, "其他營業收入": 13,
@@ -18,7 +18,6 @@ CATEGORY_MAP = {
     "行銷費用(廣告/公關)": 26, "分潤獎金": 27, "雜項費用": 28
 }
 
-# 智慧匹配關鍵字
 KEYWORD_RULES = {
     "教材": "核心教材收入", "訂閱": "訂閱教材收入", "入門": "入門方案收入", "教練": "教練1v1 收入",
     "staking": "Staking結算收益", "代理": "軟體代理收入",
@@ -31,7 +30,7 @@ KEYWORD_RULES = {
 }
 
 def get_month_col(month):
-    return 4 + (month - 1) * 3  # 1月=D(4), 2月=G(7), 3月=J(10)
+    return 4 + (month - 1) * 3
 
 # --- 初始化 ---
 intents = discord.Intents.default()
@@ -70,30 +69,33 @@ async def record(ctx, amount: int, *, description: str):
         row = CATEGORY_MAP[target_category]
         col = get_month_col(month)
         
-        # 2. 讀取現有金額 (處理帶有逗號或空格的格式)
-        current_cell = sheet.cell(row, col)
-        raw_value = current_cell.value
+        # 2. 獲取儲存格資訊 (包含數值與附註)
+        cell_data = sheet.cell(row, col)
+        raw_value = cell_data.value
         
+        # --- 終極數字過濾邏輯 ---
         if raw_value:
-            # 移除逗號與前後空格，確保 int() 能讀取
-            clean_value = str(raw_value).replace(',', '').strip()
-            # 如果還是有非數字字元，強制當作 0
-            current_val = int(float(clean_value)) if clean_value.replace('.','',1).isdigit() else 0
+            # 使用正則表達式只留下數字，排除逗號、空格、貨幣符號等
+            clean_value = re.sub(r'[^\d]', '', str(raw_value))
+            current_val = int(clean_value) if clean_value else 0
         else:
             current_val = 0
             
         new_val = current_val + amount
+        
+        # 3. 更新 Google Sheets
         sheet.update_cell(row, col, new_val)
         
-        # 3. 加入「小三角」附註 (Note)
-        existing_note = current_cell.note or ""
+        # 4. 加入「小三角」附註 (Note)
+        existing_note = cell_data.note or ""
         timestamp = now.strftime("%m/%d %H:%M")
-        new_note_content = f"{existing_note}\n{timestamp}: {description} (${amount})".strip()
+        new_note_content = f"{existing_note}\n{timestamp}: {description} (${amount:,})".strip()
         sheet.update_note(row, col, new_note_content)
 
-        await ctx.send(f"✅ **入帳成功！**\n📁 類別：`{target_category}`\n💰 金額：`${amount:,}`\n📅 月份：{month}月\n📝 附註：滑鼠移至試算表格子即可查看明細")
+        await ctx.send(f"✅ **入帳成功！**\n📁 類別：`{target_category}`\n💰 金額：`${amount:,}`\n📅 月份：{month}月\n📝 明細已加入儲存格附註")
 
     except Exception as e:
-        await ctx.send(f"❌ 記帳失敗，錯誤原因：`{str(e)}`")
+        # 輸出更詳細的錯誤資訊方便 debug
+        await ctx.send(f"❌ 記帳失敗！\n錯誤原因：`{str(e)}`")
 
 bot.run(os.getenv('DISCORD_TOKEN'))
